@@ -1,0 +1,11 @@
+@"
+venv/
+.env
+__pycache__/
+faiss_index/
+uploads/
+custom_data/
+*.pdf
+Resume.txt
+Linkedin.txt
+"@ | Out-File -Encoding utf8 .gitignore
