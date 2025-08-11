@@ -23,7 +23,7 @@ st.set_page_config(page_title="GenAI Q&A (RAG)", page_icon="💬", layout="wide"
 # ---- Secrets (safe for local) ----
 def _load_openai_key_from_secrets_if_present():
     """If running on Streamlit Cloud, pull key from st.secrets.
-    Wrapped in try/except so local runs without secrets.toml don't crash."""
+    Wrapped so local runs without secrets.toml don't crash."""
     try:
         if "OPENAI_API_KEY" not in os.environ and "OPENAI_API_KEY" in st.secrets:
             os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
@@ -208,6 +208,19 @@ def save_uploads(uploaded_files, target_folder="uploads"):
         saved.append(str(dest))
     return saved
 
+# NEW: style helper
+def apply_style(prompt: str, style: str) -> str:
+    if style == "Detailed":
+        return (
+            "Answer in a detailed, step-by-step way, include brief reasoning and keep it clear.\n\n"
+            f"User question: {prompt}"
+        )
+    else:
+        return (
+            "Answer concisely in 2–4 sentences, no fluff.\n\n"
+            f"User question: {prompt}"
+        )
+
 # =========================
 # Sidebar (explicit actions)
 # =========================
@@ -226,6 +239,14 @@ build_from_uploads_btn = st.sidebar.button("Build index from uploaded files")
 rebuild_local_btn = st.sidebar.button("Rebuild local FAISS index")
 
 model_name = st.sidebar.selectbox("Model", ["gpt-4o-mini", "gpt-3.5-turbo"])
+
+# NEW: Answer style toggle
+answer_style = st.sidebar.radio(
+    "Answer style",
+    ["Concise", "Detailed"],
+    index=0,
+    help="Concise = shorter answers. Detailed = more verbose answers."
+)
 
 # Prefer in-memory index if created
 vectorstore = st.session_state.get("in_memory_db", None)
@@ -325,8 +346,10 @@ if prompt:
             retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
             crc = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
 
+            styled_prompt = apply_style(prompt, answer_style)
+
             with st.spinner("Thinking…"):
-                result = crc({"question": prompt, "chat_history": st.session_state.chat_history})
+                result = crc({"question": styled_prompt, "chat_history": st.session_state.chat_history})
                 answer = result.get("answer", "(No answer)")
 
             with st.chat_message("assistant"):
@@ -347,3 +370,23 @@ if prompt:
                 st.caption(f"(Could not fetch sources: {e})")
     except Exception as e:
         st.error(f"Error while answering: {e}")
+
+# ===== Download transcript (sidebar) =====
+def _format_chat_for_download(messages):
+    lines = []
+    for role, content in messages:
+        who = "You" if role == "user" else "Assistant"
+        lines.append(f"{who}: {content}")
+    return "\n\n".join(lines)
+
+with st.sidebar.expander("Export", expanded=False):
+    if st.session_state.get("messages"):
+        transcript = _format_chat_for_download(st.session_state["messages"])
+        st.download_button(
+            label="⬇️ Download chat (.txt)",
+            data=transcript.encode("utf-8"),
+            file_name="chat_transcript.txt",
+            mime="text/plain",
+        )
+    else:
+        st.caption("Start a chat to enable export.")
