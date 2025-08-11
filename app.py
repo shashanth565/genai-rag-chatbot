@@ -16,34 +16,82 @@ from langchain.chains import ConversationalRetrievalChain
 # =========================
 # Env & page config
 # =========================
-# --- Custom background (gradient) ---
-st.markdown("""
-<style>
-/* Page background */
-.stApp {
-  background: radial-gradient(1200px 600px at 10% 10%, #0ea5e922, transparent 60%),
-              radial-gradient(1000px 500px at 90% 20%, #22c55e22, transparent 60%),
-              linear-gradient(180deg, #0B1220, #0B1220);
-}
-/* Card/panel background (keep readable) */
-.block-container { padding-top: 2rem; }
-.css-1y4p8pa, .st-emotion-cache-13ln4jf, .st-emotion-cache-1r6slb0 { 
-  background: transparent !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
 load_dotenv()  # loads .env locally
-# If running on Streamlit Cloud, allow reading from Secrets
-if "OPENAI_API_KEY" not in os.environ and "OPENAI_API_KEY" in st.secrets:
-    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
 st.set_page_config(page_title="GenAI Q&A (RAG)", page_icon="💬", layout="wide")
-st.title("💬 GenAI Q&A Chatbot (RAG)")
 
-# Small debug panel (does not show your key)
-with st.expander("Debug (temporary)"):
-    st.write("OPENAI_API_KEY set?", bool(os.getenv("OPENAI_API_KEY")))
+# ---- Secrets (safe for local) ----
+def _load_openai_key_from_secrets_if_present():
+    """If running on Streamlit Cloud, pull key from st.secrets.
+    Wrapped in try/except so local runs without secrets.toml don't crash."""
+    try:
+        if "OPENAI_API_KEY" not in os.environ and "OPENAI_API_KEY" in st.secrets:
+            os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        pass
+
+def _is_public_mode():
+    """Public-safe defaults via Secrets; defaults to False locally."""
+    try:
+        return st.secrets.get("PUBLIC_APP", "0") == "1"
+    except Exception:
+        return False
+
+_load_openai_key_from_secrets_if_present()
+PUBLIC = _is_public_mode()
+
+def _api_key_present() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY"))
+
+# ===== Welcome / Hero =====
+st.markdown("""
+<div style="padding: 18px 20px; border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07);">
+  <h2 style="margin:0 0 6px 0;">💬 GenAI Q&A Chatbot (RAG)</h2>
+  <p style="margin:0; opacity:0.9">
+    Upload PDFs/TXTs or use the local knowledge base. I’ll retrieve the right chunks with FAISS and answer using OpenAI — with sources.
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+with st.expander("👉 How to use (quick start)", expanded=True):
+    st.markdown("""
+**Option A – Fast test (private, per-session)**
+1. In the sidebar: turn **OFF** “Save uploads to disk” and **OFF** “Use local indexes/folders”.
+2. Upload a PDF/TXT.
+3. Click **Build index from uploaded files**.
+4. Ask your question in the chat box.
+
+**Option B – Reusable local index (persists on server)**
+1. Turn **ON** “Save uploads to disk” and **ON** “Use local indexes/folders”.
+2. Upload files.
+3. Click **Rebuild local FAISS index** (this reprocesses everything in `uploads/` + `custom_data/`).
+4. Ask questions. Next time you won’t need to re-upload.
+
+**Sample questions**
+- “Summarize this document in 5 bullets.”
+- “What are the key requirements and dates?”
+- “List pros/cons mentioned about &lt;topic&gt;.”
+- “Give me a 2-paragraph overview with citations.”
+""")
+
+with st.expander("🔐 Privacy & data handling"):
+    st.markdown("""
+- Each visitor has a **separate session**. Your chat is **not** visible to others.
+- With **Save uploads to disk = OFF**, files stay **in memory** for your session only (safer for public demos).
+- With **Save uploads to disk = ON**, uploads are written to the server’s `uploads/` folder and included in the shared local index when you rebuild.
+- Don’t put secrets in documents. Your **OpenAI API key** is stored as a secret (not in code).
+""")
+
+with st.expander("🛠️ Troubleshooting"):
+    st.markdown("""
+- If the page looks blank after upload, wait for the ✅ status after building the index.
+- If you see *“No extractable text”*, your PDF may be scanned — use an OCR/searchable version or paste text into a `.txt`.
+- If answers fail: check that **OPENAI_API_KEY** is set; try smaller files; open the **Debug** expander for state.
+""")
+
+# Small debug panel (never prints your key)
+with st.expander("🐞 Debug"):
+    st.write("OPENAI_API_KEY set?", _api_key_present())
 
 # =========================
 # Helpers
@@ -54,23 +102,6 @@ CUSTOM_DIRS = ["custom_data", "uploads"]
 def split_docs(docs):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     return splitter.split_documents(docs)
-
-def load_files_from_folder(folder: str):
-    """Load all .txt and .pdf from a folder into LangChain Documents."""
-    docs = []
-    p = Path(folder)
-    if not p.exists():
-        return docs
-    for path in p.glob("**/*"):
-        if path.suffix.lower() == ".txt":
-            docs.extend(TextLoader(str(path), encoding="utf-8").load())
-        elif path.suffix.lower() == ".pdf":
-            try:
-                docs.extend(PyPDFLoader(str(path)).load())
-            except Exception:
-                # Fallback to pdfplumber for tricky PDFs
-                docs.extend(pdfplumber_load(str(path), source_name=path.name))
-    return docs
 
 def pdfplumber_load(pdf_path: str, source_name: str = "uploaded.pdf"):
     """Fallback: extract text from a PDF using pdfplumber."""
@@ -85,6 +116,22 @@ def pdfplumber_load(pdf_path: str, source_name: str = "uploaded.pdf"):
     except Exception as e:
         st.warning(f"pdfplumber failed on {source_name}: {e}")
     return out
+
+def load_files_from_folder(folder: str):
+    """Load all .txt and .pdf from a folder into Documents."""
+    docs = []
+    p = Path(folder)
+    if not p.exists():
+        return docs
+    for path in p.glob("**/*"):
+        if path.suffix.lower() == ".txt":
+            docs.extend(TextLoader(str(path), encoding="utf-8").load())
+        elif path.suffix.lower() == ".pdf":
+            try:
+                docs.extend(PyPDFLoader(str(path)).load())
+            except Exception:
+                docs.extend(pdfplumber_load(str(path), source_name=path.name))
+    return docs
 
 def load_uploaded_files(uploaded_files):
     """Return Documents from uploaded PDFs/TXTs (temporary files)."""
@@ -105,14 +152,12 @@ def load_uploaded_files(uploaded_files):
                 tmp.write(data)
                 path = tmp.name
 
-            # Try PyPDFLoader first
             docs = []
             try:
                 docs = PyPDFLoader(path).load()
             except Exception:
                 docs = []
 
-            # Fallback to pdfplumber if empty/failed
             if not docs or all(not d.page_content.strip() for d in docs):
                 docs = pdfplumber_load(path, source_name=uf.name)
 
@@ -122,11 +167,14 @@ def load_uploaded_files(uploaded_files):
         else:
             st.warning(f"Unsupported file type: {uf.name}. Use .pdf or .txt")
 
-    # Filter totally empty pages
     return [d for d in all_docs if getattr(d, "page_content", "").strip()]
 
 def build_vectorstore_from_docs(docs, label="Building…"):
     """Create FAISS index from Docs (with guards, progress and errors)."""
+    if not _api_key_present():
+        st.error("OPENAI_API_KEY not set. Add it to your local .env or Streamlit Secrets.")
+        return None
+
     docs = [d for d in docs if getattr(d, "page_content", "").strip()]
     if not docs:
         st.error("No extractable text found in the provided files/folders. "
@@ -170,11 +218,14 @@ uploaded_files = st.sidebar.file_uploader(
     accept_multiple_files=True,
     key="uploader",
 )
-persist_uploads = st.sidebar.checkbox("Save uploads to disk (reusable)", value=True)
-use_local = st.sidebar.checkbox("Use local indexes/folders", value=True)
+
+persist_uploads = st.sidebar.checkbox("Save uploads to disk (reusable)", value=not PUBLIC)
+use_local = st.sidebar.checkbox("Use local indexes/folders", value=not PUBLIC)
 
 build_from_uploads_btn = st.sidebar.button("Build index from uploaded files")
 rebuild_local_btn = st.sidebar.button("Rebuild local FAISS index")
+
+model_name = st.sidebar.selectbox("Model", ["gpt-4o-mini", "gpt-3.5-turbo"])
 
 # Prefer in-memory index if created
 vectorstore = st.session_state.get("in_memory_db", None)
@@ -189,13 +240,12 @@ if build_from_uploads_btn:
                 # Save uploads → combine folders → rebuild local index (persistent)
                 save_uploads(uploaded_files, "uploads")
                 all_docs = []
-                for d in CUSTOM_DIRS:
+                for d in ["custom_data", "uploads"]:
                     all_docs.extend(load_files_from_folder(d))
                 db = build_vectorstore_from_docs(all_docs, label="Rebuilding local index from uploads + folders…")
                 if db:
                     db.save_local(INDEX_DIR)
                     st.sidebar.success("Uploads saved & FAISS index updated.")
-                    # Also set as active for this session
                     st.session_state["in_memory_db"] = db
                     vectorstore = db
             else:
@@ -213,7 +263,7 @@ if build_from_uploads_btn:
 if rebuild_local_btn:
     try:
         all_docs = []
-        for d in CUSTOM_DIRS:
+        for d in ["custom_data", "uploads"]:
             all_docs.extend(load_files_from_folder(d))
         db = build_vectorstore_from_docs(all_docs, label="Rebuilding local FAISS index…")
         if db:
@@ -227,9 +277,14 @@ if rebuild_local_btn:
 # C) Load local persistent index if no in-memory is set and toggle is ON
 if vectorstore is None and use_local:
     try:
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        vectorstore = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
-        st.sidebar.info("Using local FAISS index (custom_data/ + uploads/).")
+        if not _api_key_present():
+            st.sidebar.warning("Set OPENAI_API_KEY to load the local index.")
+        else:
+            embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+            vectorstore = FAISS.load_local(
+                INDEX_DIR, embeddings, allow_dangerous_deserialization=True
+            )
+            st.sidebar.info("Using local FAISS index (custom_data/ + uploads/).")
     except Exception:
         st.sidebar.info("No local FAISS index loaded. Use the buttons above to build one.")
 
@@ -241,26 +296,28 @@ if "messages" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []     # for CRC: list[(user, assistant)]
 
-model_name = st.sidebar.selectbox("Model", ["gpt-3.5-turbo", "gpt-4o-mini"])
-llm = ChatOpenAI(model=model_name)
-
 st.subheader("Chat")
 for role, content in st.session_state.messages:
     with st.chat_message(role):
         st.markdown(content)
 
-prompt = st.chat_input("Ask a question about your documents…")
-
-# Small debug state
+# Small state debug
 with st.expander("Debug (state)"):
     st.write("Has in_memory_db?", "in_memory_db" in st.session_state)
     st.write("Vectorstore loaded?", vectorstore is not None)
 
+prompt = st.chat_input("Ask a question about your documents…")
+
 if prompt:
     try:
-        if vectorstore is None:
+        if not _api_key_present():
+            st.error("OPENAI_API_KEY not set. Add it to your local .env or Streamlit Secrets.")
+        elif vectorstore is None:
             st.error("No data loaded. Upload and build the index (buttons in the sidebar) first.")
         else:
+            # Initialize LLM only when needed (avoids errors if key is missing earlier)
+            llm = ChatOpenAI(model=model_name)
+
             with st.chat_message("user"):
                 st.markdown(prompt)
             st.session_state.messages.append(("user", prompt))

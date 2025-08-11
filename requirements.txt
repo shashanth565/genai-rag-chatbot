@@ -1,10 +1,12 @@
-streamlit
-langchain
-langchain-community
-langchain-openai
-openai
-faiss-cpu
-tiktoken
-python-dotenv
-pypdf
-pdfplumber
+# open requirements.txt and set exact versions you want
+# e.g.
+# streamlit
+# langchain==0.3.27
+# langchain-community==0.3.27
+# langchain-openai==0.2.12
+# openai>=1.30.0
+# faiss-cpu
+# tiktoken
+# python-dotenv
+# pypdf
+# pdfplumber
